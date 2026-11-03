@@ -96,10 +96,12 @@
   </div>
 </div></div>
 
+<div class="modal" id="dynModal"></div>
+
 <div id="login">
   <div class="box">
     <h1>運転士支援タブレット</h1>
-    <p>ゲームの中のタブレットの左下に出ている<br>6 けたの接続番号を入れてください</p>
+    <p>ゲームの中のタブレットの設定画面、または<br>モニターの車内設定の画面に出ている<br>6 けたの接続番号を入れてください</p>
     <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
     <button id="go">接続</button>
     <div id="err"></div>
@@ -514,6 +516,8 @@ function refreshPanel() {
     $("kV").textContent = k ? k.name : "未設定";
     $("dispBtn").textContent = now.disponoff ? "ON" : "OFF";
     $("dispBtn").className = now.disponoff ? "go" : "off";
+  } else if (openPanel === "dyn") {
+    if (dynRefresh) dynRefresh();
   } else if (openPanel === "memo") {
     $("mV").textContent = sel.memoSize;
     $("memoCount").textContent = `${[...$("memoText").value].length} / ${o.memoMax || 200} 文字`;
@@ -561,6 +565,217 @@ $("memoSend").onclick = () => sendCmd("memo", { text: $("memoText").value, size:
 $("memoClear").onclick = () => { $("memoText").value = ""; refreshPanel(); sendCmd("memo", { text: "", size: sel.memoSize }); };
 $("memoBack").onclick = () => { show("memoModal", false); openPanel = null; };
 
+// ---------------- モニターの操作（方向幕設定・運用設定・車内設定・タブレットとの同期） ----------------
+let dynRefresh = null;
+const BLUE = "#0046a0";
+function mk(tag, cls, text) {
+  const e = document.createElement(tag);
+  if (cls) e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+function sheet(title, color) {
+  const m = $("dynModal");
+  m.innerHTML = "";
+  const sh = mk("div", "sheet");
+  const h = mk("h2", "", title);
+  h.style.background = color || BLUE;
+  const body = mk("div", "body");
+  sh.append(h, body);
+  m.appendChild(sh);
+  show("dynModal", true);
+  openPanel = "dyn";
+  dynRefresh = null;
+  return body;
+}
+function closeDyn() { show("dynModal", false); openPanel = null; dynRefresh = null; }
+function selRow(body, label) {
+  const row = mk("div", "row");
+  const name = mk("div", "name", label);
+  const sel = mk("div", "sel");
+  const l = mk("button", "", "◀"), v = mk("div", "val", "-"), r = mk("button", "", "▶");
+  sel.append(l, v, r);
+  row.append(name, sel);
+  body.appendChild(row);
+  return { name, l, v, r };
+}
+function btnRow(body, items) {
+  const row = mk("div", "btns");
+  const out = items.map(([text, cls, fn]) => { const b = mk("button", cls, text); b.onclick = fn; row.appendChild(b); return b; });
+  body.appendChild(row);
+  return out;
+}
+function opts() {
+  const o = state.opts;
+  if (!o) { toast("設定の選択肢がまだ届いていません。少し待ってください", "bad"); return null; }
+  return o;
+}
+const stepI = (i, n, d) => (n ? (i + d + n) % n : 0);
+
+// 方向幕設定
+function openMaku() {
+  const o = opts(); if (!o) return;
+  const mo = o.maku;
+  if (!mo) { toast("方向幕のデータを読み込めませんでした", "bad"); return; }
+  const types = listOf(mo.types), terms = listOf(mo.terminals), specs = listOf(mo.specials), valid = mo.valid || {};
+  const now = o.now || {};
+  const idx = (list, v) => Math.max(0, list.findIndex((x) => x.value === v));
+  let ti = idx(types, now.type || 2);
+  const non = () => types[ti] && types[ti].value === 1;
+  let ai = non() ? idx(specs, now.startsta || 1) : idx(terms, now.startsta || 1);
+  let bi = idx(terms, now.endsta || 1);
+
+  const body = sheet("方向幕設定");
+  const T = selRow(body, "種別"), A = selRow(body, "始発"), B = selRow(body, "終点");
+  const preview = mk("div", "note"); preview.style.fontSize = "18px"; preview.style.textAlign = "center";
+  body.appendChild(preview);
+  const code = () => non()
+    ? [`${types[ti].value}${specs[ai].value}0`, types[ti].value, specs[ai].value, 0]
+    : [`${types[ti].value}${terms[ai].value}${terms[bi].value}`, types[ti].value, terms[ai].value, terms[bi].value];
+  const [applyB] = btnRow(body, [
+    ["設定", "go", () => { const [c, t, a, b] = code(); if (!valid[c]) return; sendCmd("maku", { t, a, b }); closeDyn(); }],
+    ["戻る", "red", closeDyn],
+  ]);
+  const refresh = () => {
+    if (!types.length) return;
+    T.v.textContent = types[ti].name;
+    if (non()) {
+      A.name.textContent = "内容"; A.v.textContent = specs[ai] ? specs[ai].name : "-";
+      B.v.textContent = "－"; B.l.style.visibility = B.r.style.visibility = "hidden";
+    } else {
+      A.name.textContent = "始発"; A.v.textContent = terms[ai] ? terms[ai].name : "-";
+      B.v.textContent = terms[bi] ? terms[bi].name : "-"; B.l.style.visibility = B.r.style.visibility = "visible";
+    }
+    const desc = valid[code()[0]];
+    preview.textContent = desc || "設定できない組み合わせです";
+    preview.style.color = desc ? "#fff" : "#ff6b6b";
+    applyB.className = desc ? "go" : "off";
+  };
+  T.l.onclick = () => { ti = stepI(ti, types.length, -1); ai = 0; bi = 0; refresh(); };
+  T.r.onclick = () => { ti = stepI(ti, types.length, 1); ai = 0; bi = 0; refresh(); };
+  A.l.onclick = () => { ai = stepI(ai, non() ? specs.length : terms.length, -1); refresh(); };
+  A.r.onclick = () => { ai = stepI(ai, non() ? specs.length : terms.length, 1); refresh(); };
+  B.l.onclick = () => { bi = stepI(bi, terms.length, -1); refresh(); };
+  B.r.onclick = () => { bi = stepI(bi, terms.length, 1); refresh(); };
+  refresh();
+}
+
+// 運用設定（ダイヤの列車）
+function openRoute() {
+  const o = opts(); if (!o) return;
+  const list = listOf(o.diagrams);
+  const body = sheet("運用設定");
+  if (!list.length) {
+    body.appendChild(mk("div", "note", "ダイヤのデータがありません"));
+    btnRow(body, [["戻る", "red", closeDyn]]);
+    return;
+  }
+  let i = Math.max(0, list.findIndex((x) => x.trainNo === (o.now && o.now.trainno)));
+  const R = selRow(body, "列車");
+  const detail = mk("div", "note"); detail.style.fontSize = "18px"; detail.style.whiteSpace = "pre-line"; detail.style.textAlign = "center";
+  body.appendChild(detail);
+  const refresh = () => {
+    const it = list[i];
+    R.v.textContent = it.trainNo;
+    detail.textContent = [`運用 ${it.unyou ?? "－"}`, it.typeName || "", `${it.from} → ${it.to}`].filter(Boolean).join("\n");
+  };
+  R.l.onclick = () => { i = stepI(i, list.length, -1); refresh(); };
+  R.r.onclick = () => { i = stepI(i, list.length, 1); refresh(); };
+  btnRow(body, [
+    ["設定", "go", () => { sendCmd("diagram", { trainNo: list[i].trainNo }); closeDyn(); }],
+    ["戻る", "red", closeDyn],
+  ]);
+  refresh();
+}
+
+// タブレットとの同期
+function openSync() {
+  if (!opts()) return;
+  const body = sheet("タブレットとの同期");
+  body.appendChild(mk("div", "note", "同期する項目：種別・次の駅・通過／停車"));
+  const row = mk("div", "row");
+  const autoB = mk("button", "", "-"); autoB.style.flex = "1";
+  row.append(mk("div", "name", "自動同期"), autoB);
+  body.appendChild(row);
+  body.appendChild(mk("div", "note", "ON にすると、設定や現在位置が変わるたびにタブレットへ写します"));
+  const nowB = mk("button", "", "今すぐ同期"); nowB.style.background = "#005ac8";
+  nowB.onclick = () => sendCmd("sync", {});
+  body.appendChild(nowB);
+  btnRow(body, [["戻る", "red", closeDyn]]);
+  const refresh = () => {
+    const on = !!(state.opts && state.opts.now && state.opts.now.autosync);
+    autoB.textContent = on ? "ON" : "OFF";
+    autoB.className = on ? "go" : "off";
+  };
+  autoB.onclick = () => sendCmd("autosync", { on: !(state.opts && state.opts.now && state.opts.now.autosync) });
+  dynRefresh = refresh;
+  refresh();
+}
+
+// 車内設定（ワイパー・尾灯）
+function openCabin() {
+  if (!opts()) return;
+  const body = sheet("車内設定");
+  const grid = mk("div", "btns");
+  const w = mk("button", "", "ワイパー"), t = mk("button", "", "尾灯");
+  w.onclick = openWiper; t.onclick = openTail;
+  grid.append(w, t);
+  body.appendChild(grid);
+  btnRow(body, [["戻る", "red", closeDyn]]);
+}
+function openWiper() {
+  const body = sheet("ワイパー");
+  const row = mk("div", "row");
+  const onB = mk("button", "", "-"); onB.style.flex = "1";
+  row.append(mk("div", "name", "ワイパー"), onB);
+  body.appendChild(row);
+  const row2 = mk("div", "row");
+  row2.appendChild(mk("div", "name", "速さ"));
+  const sp = mk("div", "btns"); sp.style.flex = "1";
+  const names = ["間欠", "普通", "早い"];
+  const spB = names.map((n, i) => { const b = mk("button", "", n); b.onclick = () => sendCmd("wiper", { kind: "speed", value: i + 1 }); sp.appendChild(b); return b; });
+  row2.appendChild(sp);
+  body.appendChild(row2);
+  btnRow(body, [["戻る", "red", openCabin]]);
+  const refresh = () => {
+    const now = (state.opts && state.opts.now) || {};
+    onB.textContent = now.wiperOn ? "ON" : "OFF";
+    onB.className = now.wiperOn ? "go" : "off";
+    spB.forEach((b, i) => (b.style.background = (now.wiperSpeed || 2) === i + 1 ? "#005ac8" : "#323232"));
+  };
+  onB.onclick = () => sendCmd("wiper", { kind: "on", value: !((state.opts && state.opts.now && state.opts.now.wiperOn)) });
+  dynRefresh = refresh;
+  refresh();
+}
+function openTail() {
+  const body = sheet("尾灯");
+  const tails = listOf(state.opts && state.opts.tails);
+  if (!tails.length) body.appendChild(mk("div", "note", "尾灯が見つかりません"));
+  const btns = {};
+  tails.forEach((tl) => {
+    const row = mk("div", "row");
+    const n = (tl.car.match(/(\d+)$/) || [])[1];
+    const b = mk("button", "", "-"); b.style.flex = "1";
+    b.onclick = () => {
+      const cur = listOf(state.opts && state.opts.tails).find((x) => x.car === tl.car);
+      sendCmd("tail", { car: tl.car, value: !(cur && cur.on) });
+    };
+    row.append(mk("div", "name", n ? `${n}号車` : tl.car), b);
+    body.appendChild(row);
+    btns[tl.car] = b;
+  });
+  btnRow(body, [["戻る", "red", openCabin]]);
+  const refresh = () => {
+    listOf(state.opts && state.opts.tails).forEach((x) => {
+      const b = btns[x.car]; if (!b) return;
+      b.textContent = x.on ? "点灯" : "消灯";
+      b.style.background = x.on ? "#c81e1e" : "#5a5a5a";
+    });
+  };
+  dynRefresh = refresh;
+  refresh();
+}
+
 // ---------------- 映っている画面を押したとき ----------------
 //   「設定」ボタン → 設定、指令通達の枠 → 指令通達
 $("stage").addEventListener("click", (e) => {
@@ -575,8 +790,12 @@ $("stage").addEventListener("click", (e) => {
     }
   }
   if (!hit) return;
-  if (hit.nm === "setting") needPin(openSettings);
-  else if (hit.nm === "sirei") needPin(openMemo);
+  const open = {
+    setting: openSettings, sirei: openMemo,                 // タブレット
+    makuset: openMaku, routeset: openRoute,                 // モニター
+    cabinset: openCabin, tabletsync: openSync,
+  }[hit.nm];
+  if (open) needPin(open);
 });
 
 // URL の ?code=123456 でもすぐに接続できる
