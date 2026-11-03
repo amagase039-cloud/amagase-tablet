@@ -31,12 +31,70 @@
   #status { position: fixed; top: max(8px, env(safe-area-inset-top)); right: 10px; z-index: 5; font-size: 12px; padding: 4px 10px; border-radius: 99px; background: #000a; color: #ccc; display: none; }
   #status.bad { background: #b71c1cdd; color: #fff; }
   #change { position: fixed; bottom: max(8px, env(safe-area-inset-bottom)); right: 10px; z-index: 5; font-size: 12px; padding: 6px 12px; border-radius: 99px; border: 0; background: #0008; color: #aaa; display: none; }
+
+  /* 操作の画面（設定・指令通達・操作番号） */
+  .modal { position: fixed; inset: 0; z-index: 20; display: none; align-items: center; justify-content: center; background: #000b; }
+  .modal.on { display: flex; }
+  .sheet { width: min(560px, 94vw); max-height: 92vh; overflow: auto; background: #000; border: 2px solid #444; border-radius: 12px; }
+  .sheet h2 { margin: 0; padding: 12px; text-align: center; font-size: 24px; background: #c80000; border-radius: 10px 10px 0 0; }
+  .sheet .body { padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+  .row { display: flex; align-items: center; gap: 8px; }
+  .row .name { width: 25%; font-size: 20px; }
+  .sel { flex: 1; display: flex; gap: 6px; }
+  .sel button { width: 56px; }
+  .sel .val { flex: 1; display: flex; align-items: center; justify-content: center; background: #1e1e1e; border-radius: 8px; font-size: 20px; padding: 10px 4px; text-align: center; }
+  .sheet button { font: inherit; font-size: 20px; color: #fff; background: #333; border: 0; border-radius: 8px; padding: 12px; }
+  .sheet button.go { background: #008c3c; }
+  .sheet button.red { background: #c80000; }
+  .sheet button.off { background: #5a5a5a; }
+  .sheet textarea { width: 100%; box-sizing: border-box; height: 180px; font: inherit; font-size: 20px; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; padding: 10px; }
+  .sheet .note { color: #9aa6ba; font-size: 14px; line-height: 1.6; }
+  .sheet input.pin { font-size: 34px; letter-spacing: 12px; text-align: center; padding: 10px; background: #111; color: #fff; border: 1px solid #555; border-radius: 8px; }
+  .btns { display: flex; gap: 10px; }
+  .btns button { flex: 1; }
+  #toast { position: fixed; left: 50%; bottom: max(24px, env(safe-area-inset-bottom)); transform: translateX(-50%); z-index: 30; padding: 10px 18px; border-radius: 99px; background: #222e; color: #fff; font-size: 16px; display: none; }
+  #toast.bad { background: #b71c1ce8; }
+  #toast.good { background: #1b7f3ae8; }
 </style>
 </head>
 <body>
 <div id="stage"><div id="canvas"></div></div>
 <div id="status"></div>
 <button id="change">番号を変える</button>
+
+<div id="toast"></div>
+
+<div class="modal" id="pinModal"><div class="sheet">
+  <h2>操作番号</h2>
+  <div class="body">
+    <div class="note">iPad から操作するには、ゲームの中のタブレットの「設定」の画面の下に出ている、<b>4 けたの操作番号</b>（／の右）を入れてください。<br>乗務員チームの人だけに出ます。iPad からの操作は、その人が操作したことになります。</div>
+    <input class="pin" id="pinInput" inputmode="numeric" pattern="[0-9]*" maxlength="4" autocomplete="off">
+    <div class="btns"><button class="off" id="pinCancel">やめる</button><button class="go" id="pinOk">決定</button></div>
+  </div>
+</div></div>
+
+<div class="modal" id="setModal"><div class="sheet">
+  <h2>設定</h2>
+  <div class="body">
+    <div class="row"><div class="name">形式</div><div class="sel"><button id="tL">◀</button><div class="val" id="tV">-</div><button id="tR">▶</button></div></div>
+    <div class="row"><div class="name">編成</div><div class="sel"><button id="uL">◀</button><div class="val" id="uV">-</div><button id="uR">▶</button></div></div>
+    <div class="row"><div class="name"></div><button class="go" id="unitGo" style="flex:1">この編成にする</button></div>
+    <div class="row"><div class="name">種別</div><div class="sel"><button id="kL">◀</button><div class="val" id="kV">-</div><button id="kR">▶</button></div></div>
+    <div class="row"><div class="name">表示</div><button id="dispBtn" style="flex:1">-</button></div>
+    <div class="btns"><button class="off" id="pinChange">操作番号を変える</button><button class="red" id="setBack">戻る</button></div>
+  </div>
+</div></div>
+
+<div class="modal" id="memoModal"><div class="sheet">
+  <h2>指令通達メモ</h2>
+  <div class="body">
+    <textarea id="memoText" placeholder="ここに入力"></textarea>
+    <div class="row" style="justify-content:space-between"><span class="note" id="memoCount"></span>
+      <div class="sel" style="flex:0 0 auto"><span class="note" style="align-self:center">文字サイズ</span><button id="mL">−</button><div class="val" id="mV" style="min-width:60px">-</div><button id="mR">＋</button></div></div>
+    <div class="btns"><button class="off" id="memoClear">消去</button><button class="go" id="memoSend">送信</button></div>
+    <button class="red" id="memoBack">戻る</button>
+  </div>
+</div></div>
 
 <div id="login">
   <div class="box">
@@ -102,10 +160,45 @@ function setStatus(text, bad) {
 }
 
 // ---------------- Firebase ----------------
+// 「見ています」の印を書く。時刻は Firebase（Google）のサーバーの時刻にする
+//   書いた時刻が返ってくるので、それで iPad の時計のずれ（clockOffset）も直す
+let clockOffset = 0;      // インターネットの時刻 − iPad の時刻（ミリ秒）
+let clockSynced = false;
 function writeWatch() {
   if (!code) return;
-  fetch(`${DB_URL}/watch/${code}.json`, { method: "PUT", body: JSON.stringify(Date.now()) }).catch(() => {});
+  const sent = Date.now();
+  fetch(`${DB_URL}/watch/${code}.json`, { method: "PUT", body: JSON.stringify({ ".sv": "timestamp" }) })
+    .then((r) => r.ok ? r.json() : null)
+    .then((serverMs) => {
+      if (typeof serverMs !== "number") return;
+      const got = Date.now();
+      clockOffset = serverMs - (sent + got) / 2;
+      clockSynced = true;
+    })
+    .catch(() => {});
 }
+const netNow = () => Date.now() + clockOffset;
+
+// 時計の欄（nm = "time"）を、インターネットの時刻で 1 秒ごとに書きかえる
+//   ゲームの中の書き方（「2026/11/03 13:02 48」か「11月3日13時2分48秒」の形）に合わせる
+function clockText(sample) {
+  const d = new Date(netNow() + 9 * 3600 * 1000); // 日本時刻
+  const p2 = (v) => String(v).padStart(2, "0");
+  const Y = d.getUTCFullYear(), M = d.getUTCMonth() + 1, D = d.getUTCDate();
+  const h = d.getUTCHours(), m = d.getUTCMinutes(), s = d.getUTCSeconds();
+  if (/[月時]/.test(sample || "")) {
+    const pad = /時0\d分|分0\d秒/.test(sample) || /^\d+月\d+日\d{2}時\d{2}分\d{2}秒$/.test(sample);
+    const q = pad ? p2 : String;
+    return `${M}月${D}日${h}時${q(m)}分${q(s)}秒`;
+  }
+  return `${Y}/${p2(M)}/${p2(D)} ${p2(h)}:${p2(m)} ${p2(s)}`;
+}
+setInterval(() => {
+  if (!state.meta) return;
+  for (const [key, n] of Object.entries(state.nodes)) {
+    if (n && n.nm === "time" && els[key]) drawText(els[key], key, Object.assign({}, n, { t: clockText(n.t) }), n.w, n.h);
+  }
+}, 250);
 
 function connect() {
   disconnect();
@@ -143,7 +236,7 @@ function setAt(root, path, value) {
 
 function apply(kind, msg) {
   lastEvent = Date.now();
-  let root = { meta: state.meta, nodes: state.nodes };
+  let root = state;
   if (kind === "put") {
     if (msg.path === "/" ) {
       root = msg.data || { meta: null, nodes: {} };
@@ -156,9 +249,12 @@ function apply(kind, msg) {
       root = setAt(root, msg.path.replace(/\/$/, "") + "/" + k, v);
     }
   }
-  state.meta = root.meta || null;
-  state.nodes = root.nodes || {};
+  state = root || {};
+  state.meta = state.meta || null;
+  state.nodes = state.nodes || {};
   queueRender();
+  onAck();
+  if (openPanel) refreshPanel();
 }
 
 // ---------------- 画面を描く ----------------
@@ -235,7 +331,8 @@ function render() {
     } else {
       st.clipPath = "";
     }
-    if (n.t !== undefined && n.t !== "") drawText(el, key, n, w, h);
+    if (n.nm === "time") drawText(el, key, Object.assign({}, n, { t: clockText(n.t) }), w, h); // 時計はインターネットの時刻
+    else if (n.t !== undefined && n.t !== "") drawText(el, key, n, w, h);
     else if (el._tx) { el._tx.remove(); el._tx = null; }
   });
 
@@ -315,6 +412,171 @@ async function keepAwake() {
 }
 document.addEventListener("visibilitychange", () => {
   if (document.visibilityState === "visible" && code) { keepAwake(); writeWatch(); }
+});
+
+// ============================================================
+// iPad からの操作（設定・指令通達）
+// ============================================================
+let openPanel = null;   // 開いている画面（"set" / "memo"）
+let pendingId = null;   // 送った操作の番号（結果を待っている）
+let lastAckT = 0;
+let pinThen = null;     // 操作番号を入れたあとに開く画面
+let sel = { ti: 1, ui: 1, memoSize: 80 };
+
+const pinKey = () => "tabletPin_" + code;
+const getPin = () => { try { return localStorage.getItem(pinKey()); } catch (e) { return null; } };
+const setPin = (p) => { try { if (p) localStorage.setItem(pinKey(), p); else localStorage.removeItem(pinKey()); } catch (e) {} };
+
+let toastTimer = null;
+function toast(msg, kind) {
+  const t = $("toast");
+  t.textContent = msg;
+  t.className = kind || "";
+  t.style.display = "block";
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => (t.style.display = "none"), 3000);
+}
+
+function show(id, on) { $(id).classList.toggle("on", on); }
+
+// 操作番号を聞いてから、画面を開く
+function needPin(then) {
+  if (getPin()) { then(); return; }
+  pinThen = then;
+  $("pinInput").value = "";
+  show("pinModal", true);
+  setTimeout(() => $("pinInput").focus(), 50);
+}
+$("pinOk").onclick = () => {
+  const p = $("pinInput").value.trim();
+  if (!/^\d{4}$/.test(p)) { toast("4 けたの数字を入れてください", "bad"); return; }
+  setPin(p);
+  show("pinModal", false);
+  if (pinThen) { const f = pinThen; pinThen = null; f(); }
+};
+$("pinCancel").onclick = () => { show("pinModal", false); pinThen = null; };
+$("pinChange").onclick = () => { setPin(null); show("setModal", false); openPanel = null; needPin(openSettings); };
+
+// 操作を送る（Firebase の cmd に書く。ゲームのサーバーが 1 秒ごとに取りに来る）
+async function sendCmd(action, value) {
+  const pin = getPin();
+  if (!pin) { needPin(() => sendCmd(action, value)); return; }
+  try {
+    const res = await fetch(`${DB_URL}/cmd/${code}.json`, {
+      method: "POST",
+      body: JSON.stringify({ p: pin, a: action, v: JSON.stringify(value), t: { ".sv": "timestamp" } }),
+    });
+    if (!res.ok) throw new Error(res.status);
+    const j = await res.json();
+    pendingId = j.name;
+    toast("送信しています…");
+  } catch (e) {
+    toast("送れませんでした（通信を確かめてください）", "bad");
+  }
+}
+
+// ゲームからの結果（ack）
+function onAck() {
+  const a = state.ack;
+  if (!a || !a.t || a.t <= lastAckT) return;
+  lastAckT = a.t;
+  if (pendingId && a.id !== pendingId) return;
+  pendingId = null;
+  toast(a.msg || (a.ok ? "反映しました" : "できませんでした"), a.ok ? "good" : "bad");
+  if (!a.ok && /操作番号/.test(a.msg || "") && /ちがい/.test(a.msg || "")) setPin(null);
+}
+
+// ---------------- 設定 ----------------
+function openSettings() {
+  const o = state.opts;
+  if (!o) { toast("設定の選択肢がまだ届いていません。少し待ってください", "bad"); return; }
+  sel.ti = (o.now && o.now.ti) || 1;
+  sel.ui = (o.now && o.now.ui) || 1;
+  openPanel = "set";
+  refreshPanel();
+  show("setModal", true);
+}
+function trains() { return (state.opts && state.opts.trains) || []; }
+function types() { return (state.opts && state.opts.types) || []; }
+const listOf = (x) => Array.isArray(x) ? x.filter(Boolean) : Object.values(x || {});
+
+function refreshPanel() {
+  const o = state.opts || {};
+  const now = o.now || {};
+  if (openPanel === "set") {
+    const tl = listOf(trains());
+    const t = tl[sel.ti - 1];
+    const ul = t ? listOf(t.units) : [];
+    const u = ul[sel.ui - 1];
+    $("tV").textContent = t ? t.name : "（なし）";
+    $("uV").textContent = u ? (u.maneno ? `${u.unit}（${u.maneno}）` : u.unit) : "（なし）";
+    const k = listOf(types()).find((x) => x.value === now.type);
+    $("kV").textContent = k ? k.name : "未設定";
+    $("dispBtn").textContent = now.disponoff ? "ON" : "OFF";
+    $("dispBtn").className = now.disponoff ? "go" : "off";
+  } else if (openPanel === "memo") {
+    $("mV").textContent = sel.memoSize;
+    $("memoCount").textContent = `${[...$("memoText").value].length} / ${o.memoMax || 200} 文字`;
+  }
+}
+
+$("tL").onclick = () => { const n = listOf(trains()).length; if (n) { sel.ti = (sel.ti - 2 + n) % n + 1; sel.ui = 1; refreshPanel(); } };
+$("tR").onclick = () => { const n = listOf(trains()).length; if (n) { sel.ti = sel.ti % n + 1; sel.ui = 1; refreshPanel(); } };
+$("uL").onclick = () => { const t = listOf(trains())[sel.ti - 1]; const n = t ? listOf(t.units).length : 0; if (n) { sel.ui = (sel.ui - 2 + n) % n + 1; refreshPanel(); } };
+$("uR").onclick = () => { const t = listOf(trains())[sel.ti - 1]; const n = t ? listOf(t.units).length : 0; if (n) { sel.ui = sel.ui % n + 1; refreshPanel(); } };
+$("unitGo").onclick = () => sendCmd("unit", { ti: sel.ti, ui: sel.ui });
+function moveType(dir) {
+  const list = listOf(types());
+  if (!list.length) return;
+  const cur = (state.opts && state.opts.now && state.opts.now.type) || 0;
+  let i = list.findIndex((x) => x.value === cur);
+  if (i < 0) i = dir > 0 ? -1 : 0;
+  i = (i + dir + list.length) % list.length;
+  $("kV").textContent = list[i].name;
+  sendCmd("set", { name: "type", value: list[i].value });
+}
+$("kL").onclick = () => moveType(-1);
+$("kR").onclick = () => moveType(1);
+$("dispBtn").onclick = () => {
+  const on = !!(state.opts && state.opts.now && state.opts.now.disponoff);
+  sendCmd("set", { name: "disponoff", value: !on });
+};
+$("setBack").onclick = () => { show("setModal", false); openPanel = null; };
+
+// ---------------- 指令通達 ----------------
+function openMemo() {
+  const o = state.opts || {};
+  const now = o.now || {};
+  $("memoText").value = now.memo || "";
+  $("memoText").maxLength = o.memoMax || 200;
+  sel.memoSize = now.memoSize || 80;
+  openPanel = "memo";
+  refreshPanel();
+  show("memoModal", true);
+}
+$("memoText").addEventListener("input", refreshPanel);
+$("mL").onclick = () => { const o = state.opts || {}; sel.memoSize = Math.max(o.memoSizeMin || 10, sel.memoSize - 5); refreshPanel(); };
+$("mR").onclick = () => { const o = state.opts || {}; sel.memoSize = Math.min(o.memoSizeMax || 200, sel.memoSize + 5); refreshPanel(); };
+$("memoSend").onclick = () => sendCmd("memo", { text: $("memoText").value, size: sel.memoSize });
+$("memoClear").onclick = () => { $("memoText").value = ""; refreshPanel(); sendCmd("memo", { text: "", size: sel.memoSize }); };
+$("memoBack").onclick = () => { show("memoModal", false); openPanel = null; };
+
+// ---------------- 映っている画面を押したとき ----------------
+//   「設定」ボタン → 設定、指令通達の枠 → 指令通達
+$("stage").addEventListener("click", (e) => {
+  if (!state.meta) return;
+  const c = $("canvas").getBoundingClientRect();
+  const s = c.width / (state.meta.w || 1);
+  const x = (e.clientX - c.left) / s, y = (e.clientY - c.top) / s;
+  let hit = null;
+  for (const n of Object.values(state.nodes)) {
+    if (n && n.nm && x >= n.x && x <= n.x + n.w && y >= n.y && y <= n.y + n.h) {
+      if (!hit || (n.o || 0) > (hit.o || 0)) hit = n;
+    }
+  }
+  if (!hit) return;
+  if (hit.nm === "setting") needPin(openSettings);
+  else if (hit.nm === "sirei") needPin(openMemo);
 });
 
 // URL の ?code=123456 でもすぐに接続できる
