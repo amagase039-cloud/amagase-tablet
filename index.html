@@ -217,8 +217,16 @@ function render() {
     st.transform = n.r ? `rotate(${n.r}deg)` : "";
     st.background = (n.bgt ?? 0) >= 1 ? "transparent" : rgba(n.bg, n.bgt);
     st.borderRadius = (n.cr || 0) + "px";
-    // ふち（枠）
-    st.boxShadow = (n.st && n.st[3] !== "t") ? `0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}` : "";
+    // ふち（UIStroke）と枠線（BorderSizePixel）
+    const shadows = [];
+    if (n.st && n.st[3] !== "t") shadows.push(`0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}`);
+    if (n.bd) {
+      const c = rgba(n.bd[0], n.bgt), size = n.bd[1];
+      if (n.bd[2] === "i") shadows.push(`inset 0 0 0 ${size}px ${c}`);
+      else if (n.bd[2] === "m") { shadows.push(`inset 0 0 0 ${size / 2}px ${c}`); shadows.push(`0 0 0 ${size / 2}px ${c}`); }
+      else shadows.push(`0 0 0 ${size}px ${c}`);
+    }
+    st.boxShadow = shadows.join(",");
     // はみ出しを隠す範囲（親の ClipsDescendants）
     if (n.cl && !n.r) {
       const t = n.cl[1] - n.y, l = n.cl[0] - n.x;
@@ -263,14 +271,17 @@ function drawText(el, key, n, w, h) {
   }
   if (span.textContent !== text) span.textContent = text;
 
-  // 文字の大きさ：ゲームの中で文字が占めている大きさ（tbw × tbh）に合わせる
-  const tw = n.tbw || 0, th = n.tbh || 0;
+  // 文字の大きさ（TextScaled のとき）
+  //   ゲームの中で文字が占めている大きさ（tbw × tbh）が分かればそれに合わせ、
+  //   分からないとき（読み取った人の画面にタブレットが映っていないときなど）は、欄に収まる一番大きい大きさ（最大 100）にする
+  let tw = n.tbw || 0, th = n.tbh || 0, maxSize = 200;
+  if (!(tw > 0 && th > 0)) { tw = w; th = h; maxSize = 100; }
   if (n.sc && tw > 0 && th > 0) {
     const cacheKey = [text, tw, th, w, n.b, wrap].join("|");
     if (fitCache[key] && fitCache[key].k === cacheKey) {
       span.style.fontSize = fitCache[key].s + "px";
     } else {
-      let lo = 1, hi = 200;
+      let lo = 1, hi = maxSize;
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2);
         span.style.fontSize = mid + "px";
