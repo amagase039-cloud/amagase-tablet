@@ -15,7 +15,7 @@
   #stage { position: fixed; inset: 0; }
   #canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; background: #000; }
   .g { position: absolute; box-sizing: border-box; }
-  .tx { position: absolute; inset: 0; display: flex; overflow: hidden; line-height: 1.15; }
+  .tx { position: absolute; inset: 0; display: flex; overflow: visible; line-height: 1; }
   .tx span { display: block; max-width: 100%; }
 
   /* 接続番号の画面 */
@@ -188,100 +188,48 @@ function render() {
   canvas.style.height = H + "px";
   fitStage(W, H);
 
-  // 親ごとに子をまとめる
-  const kids = {};
-  for (const [key, n] of Object.entries(state.nodes)) {
-    if (!n) continue;
-    const pk = n.p ? "n" + n.p : "root";
-    (kids[pk] = kids[pk] || []).push(key);
-  }
-  for (const list of Object.values(kids)) list.sort((a, b) => (state.nodes[a].o || 0) - (state.nodes[b].o || 0));
-
   // 使わなくなった要素を消す
   for (const key of Object.keys(els)) {
-    if (!state.nodes[key]) { els[key].remove(); delete els[key]; }
+    if (!state.nodes[key]) { els[key].remove(); delete els[key]; delete fitCache[key]; }
   }
 
-  const layoutChildren = (parentKey, parentEl, pw, ph, listLayout, padding) => {
-    const list = kids[parentKey] || [];
-    let padL = 0, padR = 0, padT = 0, padB = 0;
-    if (padding) {
-      padL = ud(padding[0], pw); padR = ud(padding[1], pw); padT = ud(padding[2], ph); padB = ud(padding[3], ph);
+  // 重なりの順（z → 並び順）
+  const keys = Object.keys(state.nodes).filter((k) => state.nodes[k] && state.nodes[k].w !== undefined);
+  keys.sort((a, b) => {
+    const A = state.nodes[a], B = state.nodes[b];
+    return ((A.z || 0) - (B.z || 0)) || ((A.o || 0) - (B.o || 0));
+  });
+
+  keys.forEach((key, idx) => {
+    const n = state.nodes[key];
+    let el = els[key];
+    if (!el) {
+      el = document.createElement("div");
+      el.className = "g";
+      els[key] = el;
+      canvas.appendChild(el);
     }
-    const iw = pw - padL - padR, ih = ph - padT - padB;
-
-    // 並べ方（UIListLayout）
-    let flow = null;
-    if (listLayout) {
-      const vis = list.filter((k) => state.nodes[k].v !== false);
-      const sorted = vis.slice().sort((a, b) => listLayout.so === "lo"
-        ? ((state.nodes[a].lo || 0) - (state.nodes[b].lo || 0)) || ((state.nodes[a].o || 0) - (state.nodes[b].o || 0))
-        : (state.nodes[a].o || 0) - (state.nodes[b].o || 0));
-      const horiz = listLayout.d === "h";
-      const pad = ud(listLayout.pad, horiz ? iw : ih);
-      const sizes = sorted.map((k) => {
-        const s = state.nodes[k].size;
-        return [ud([s[0], s[1]], iw), ud([s[2], s[3]], ih)];
-      });
-      const total = sizes.reduce((a, s) => a + (horiz ? s[0] : s[1]), 0) + pad * Math.max(0, sorted.length - 1);
-      let cur = 0;
-      const mainAlign = horiz ? listLayout.ha : listLayout.va;
-      const room = (horiz ? iw : ih) - total;
-      if (mainAlign === "c") cur = room / 2; else if (mainAlign === "r" || mainAlign === "b") cur = room;
-      flow = {};
-      sorted.forEach((k, i) => {
-        const [w, h] = sizes[i];
-        let x, y;
-        if (horiz) {
-          x = cur; cur += w + pad;
-          y = listLayout.va === "c" ? (ih - h) / 2 : listLayout.va === "b" ? ih - h : 0;
-        } else {
-          y = cur; cur += h + pad;
-          x = listLayout.ha === "c" ? (iw - w) / 2 : listLayout.ha === "r" ? iw - w : 0;
-        }
-        flow[k] = [x, y];
-      });
+    const st = el.style;
+    const w = n.w, h = n.h;
+    st.left = n.x + "px"; st.top = n.y + "px";
+    st.width = Math.max(0, w) + "px"; st.height = Math.max(0, h) + "px";
+    st.zIndex = idx + 1;
+    st.transform = n.r ? `rotate(${n.r}deg)` : "";
+    st.background = (n.bgt ?? 0) >= 1 ? "transparent" : rgba(n.bg, n.bgt);
+    st.borderRadius = (n.cr || 0) + "px";
+    // ふち（枠）
+    st.boxShadow = (n.st && n.st[3] !== "t") ? `0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}` : "";
+    // はみ出しを隠す範囲（親の ClipsDescendants）
+    if (n.cl && !n.r) {
+      const t = n.cl[1] - n.y, l = n.cl[0] - n.x;
+      const r = (n.x + w) - (n.cl[0] + n.cl[2]), b = (n.y + h) - (n.cl[1] + n.cl[3]);
+      st.clipPath = `inset(${t}px ${r}px ${b}px ${l}px)`;
+    } else {
+      st.clipPath = "";
     }
-
-    list.forEach((key, idx) => {
-      const n = state.nodes[key];
-      if (!n || !n.size || !n.pos) return; // 届きかけの部品は、全部届くまで描かない
-      let el = els[key];
-      if (!el) {
-        el = document.createElement("div");
-        el.className = "g";
-        els[key] = el;
-      }
-      if (el.parentNode !== parentEl) parentEl.appendChild(el);
-
-      const w = ud([n.size[0], n.size[1]], iw), h = ud([n.size[2], n.size[3]], ih);
-      let x, y;
-      if (flow && flow[key]) { [x, y] = flow[key]; }
-      else {
-        x = ud([n.pos[0], n.pos[1]], iw) - (n.an ? n.an[0] : 0) * w;
-        y = ud([n.pos[2], n.pos[3]], ih) - (n.an ? n.an[1] : 0) * h;
-      }
-      const st = el.style;
-      st.display = n.v === false ? "none" : "block";
-      st.left = (x + padL) + "px"; st.top = (y + padT) + "px";
-      st.width = Math.max(0, w) + "px"; st.height = Math.max(0, h) + "px";
-      st.zIndex = (n.z || 1) * 1000 + idx;
-      st.transform = n.rot ? `rotate(${n.rot}deg)` : "";
-      st.background = (n.bgt ?? 0) >= 1 ? "transparent" : rgba(n.bg, n.bgt);
-      st.overflow = n.clip ? "hidden" : "visible";
-      st.borderRadius = n.cr ? (n.cr[0] * Math.min(w, h) + n.cr[1]) + "px" : "0";
-      const hasText = n.t !== undefined;
-      if (n.st && !hasText) st.boxShadow = `inset 0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}`;
-      else st.boxShadow = "";
-
-      if (n.v !== false) {
-        if (hasText) drawText(el, key, n, w, h);
-        else if (el._tx) { el._tx.remove(); el._tx = null; }
-        layoutChildren(key, el, w, h, n.ll, n.pd);
-      }
-    });
-  };
-  layoutChildren("root", canvas, W, H, null, null);
+    if (n.t !== undefined && n.t !== "") drawText(el, key, n, w, h);
+    else if (el._tx) { el._tx.remove(); el._tx = null; }
+  });
 
   const age = (Date.now() - (meta.updated || 0)) / 1000;
   if (age > STALE_SEC) setStatus(`${meta.train || ""}：ゲームからの更新が止まっています`, true);
@@ -307,26 +255,26 @@ function drawText(el, key, n, w, h) {
   span.style.wordBreak = wrap ? "break-all" : "normal";
   span.style.color = rgba(n.tc, n.tt);
   span.style.fontWeight = n.b ? "700" : "400";
-  if (n.st) {
-    span.style.webkitTextStroke = `${n.st[1]}px ${rgba(n.st[0], n.st[2])}`;
+  if (n.st && n.st[3] === "t") {
+    span.style.webkitTextStroke = `${n.st[1] * 2}px ${rgba(n.st[0], n.st[2])}`;
     span.style.paintOrder = "stroke fill";
   } else {
     span.style.webkitTextStroke = "";
   }
   if (span.textContent !== text) span.textContent = text;
 
-  if (n.sc) {
-    const max = Math.min(n.tmax || 100, 100);
-    const cacheKey = [text, Math.round(w), Math.round(h), n.b, wrap, max].join("|");
+  // 文字の大きさ：ゲームの中で文字が占めている大きさ（tbw × tbh）に合わせる
+  const tw = n.tbw || 0, th = n.tbh || 0;
+  if (n.sc && tw > 0 && th > 0) {
+    const cacheKey = [text, tw, th, w, n.b, wrap].join("|");
     if (fitCache[key] && fitCache[key].k === cacheKey) {
       span.style.fontSize = fitCache[key].s + "px";
     } else {
-      // 欄に収まる一番大きい文字の大きさを探す
-      let lo = 1, hi = max;
+      let lo = 1, hi = 200;
       while (lo < hi) {
         const mid = Math.ceil((lo + hi) / 2);
         span.style.fontSize = mid + "px";
-        if (span.scrollWidth <= w + 0.5 && span.scrollHeight <= h + 0.5 && span.offsetWidth <= w + 0.5) lo = mid; else hi = mid - 1;
+        if (span.scrollWidth <= tw + 2 && span.scrollHeight <= th + 2) lo = mid; else hi = mid - 1;
       }
       span.style.fontSize = lo + "px";
       fitCache[key] = { k: cacheKey, s: lo };
