@@ -343,6 +343,23 @@ function render() {
   else setStatus(`${meta.train || ""}　接続中`, false);
 }
 
+// このページのフォントの「1 行の高さ ÷ 字の大きさ」（日本語のフォントはおよそ 1.4〜1.5）
+const ratioCache = {};
+function lineRatio(bold) {
+  const k = bold ? "b" : "n";
+  if (ratioCache[k]) return ratioCache[k];
+  const sp = document.createElement("span");
+  sp.style.cssText = "position:absolute;visibility:hidden;font-size:100px;line-height:normal;white-space:pre;font-weight:" + (bold ? 700 : 400);
+  sp.textContent = "Ag漢字";
+  document.body.appendChild(sp);
+  const r = sp.getBoundingClientRect().height / 100;
+  sp.remove();
+  ratioCache[k] = (r > 0.8 && r < 2.5) ? r : 1.45;
+  return ratioCache[k];
+}
+// フォントの読み込みが終わったら測り直す
+if (document.fonts && document.fonts.ready) document.fonts.ready.then(() => { delete ratioCache.b; delete ratioCache.n; queueRender(); });
+
 function drawText(el, key, n, w, h) {
   let tx = el._tx;
   if (!tx) {
@@ -371,12 +388,15 @@ function drawText(el, key, n, w, h) {
   if (span.textContent !== text) span.textContent = text;
 
   // ゲームの中で計算した文字の大きさ・1 行の高さ・行の数が届いていれば、そのまま使う
+  //   Roblox の文字の大きさ（TextSize）は「1 行の高さ」なので、字そのものの大きさは、それより小さい
+  //   このページのフォントで、1 行の高さが同じになるように字の大きさを決める
   if (n.fs) {
     const multi = (n.ln || 1) > 1 || text.includes("\n");
+    const lh = n.lh || n.fs;
     span.style.whiteSpace = multi ? "pre-wrap" : "pre";
     span.style.wordBreak = multi ? "break-all" : "normal";
-    span.style.fontSize = n.fs + "px";
-    span.style.lineHeight = (n.lh || n.fs) + "px";
+    span.style.fontSize = (lh / lineRatio(n.b)) + "px";
+    span.style.lineHeight = lh + "px";
     return;
   }
   span.style.lineHeight = "";
