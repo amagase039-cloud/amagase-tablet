@@ -370,6 +370,17 @@ function drawText(el, key, n, w, h) {
   }
   if (span.textContent !== text) span.textContent = text;
 
+  // ゲームの中で計算した文字の大きさ・1 行の高さ・行の数が届いていれば、そのまま使う
+  if (n.fs) {
+    const multi = (n.ln || 1) > 1 || text.includes("\n");
+    span.style.whiteSpace = multi ? "pre-wrap" : "pre";
+    span.style.wordBreak = multi ? "break-all" : "normal";
+    span.style.fontSize = n.fs + "px";
+    span.style.lineHeight = (n.lh || n.fs) + "px";
+    return;
+  }
+  span.style.lineHeight = "";
+
   // 文字の大きさ（TextScaled のとき）
   //   ゲームの中で文字が占めている大きさ（tbw × tbh）が分かればそれに合わせ、
   //   分からないとき（読み取った人の画面にタブレットが映っていないときなど）は、欄に収まる一番大きい大きさ（最大 100）にする
