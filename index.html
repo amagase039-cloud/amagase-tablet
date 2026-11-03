@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="運転士支援">
+<title>運転士支援タブレット</title>
+<style>
+  :root { color-scheme: dark; }
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; -webkit-user-select: none; user-select: none; }
+  body { font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", "Noto Sans JP", "Yu Gothic", sans-serif; color: #fff; }
+  #stage { position: fixed; inset: 0; }
+  #canvas { position: absolute; left: 0; top: 0; transform-origin: 0 0; overflow: hidden; background: #000; }
+  .g { position: absolute; box-sizing: border-box; }
+  .tx { position: absolute; inset: 0; display: flex; overflow: hidden; line-height: 1.15; }
+  .tx span { display: block; max-width: 100%; }
+
+  /* 接続番号の画面 */
+  #login { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; background: #10141c; z-index: 10; }
+  #login .box { width: min(420px, 90vw); padding: 28px; border-radius: 16px; background: #1b2230; box-shadow: 0 10px 40px #0008; text-align: center; }
+  #login h1 { font-size: 20px; margin: 0 0 6px; }
+  #login p { color: #9aa6ba; font-size: 14px; margin: 0 0 18px; line-height: 1.6; }
+  #code { width: 100%; box-sizing: border-box; font-size: 34px; letter-spacing: 10px; text-align: center; padding: 12px; border-radius: 10px; border: 1px solid #3a4560; background: #0d1119; color: #fff; }
+  #go { margin-top: 16px; width: 100%; padding: 14px; font-size: 18px; font-weight: 700; border: 0; border-radius: 10px; background: #0a6ed1; color: #fff; }
+  #err { color: #ff8a80; font-size: 14px; min-height: 20px; margin-top: 10px; }
+
+  /* 状態の表示（右上） */
+  #status { position: fixed; top: max(8px, env(safe-area-inset-top)); right: 10px; z-index: 5; font-size: 12px; padding: 4px 10px; border-radius: 99px; background: #000a; color: #ccc; display: none; }
+  #status.bad { background: #b71c1cdd; color: #fff; }
+  #change { position: fixed; bottom: max(8px, env(safe-area-inset-bottom)); right: 10px; z-index: 5; font-size: 12px; padding: 6px 12px; border-radius: 99px; border: 0; background: #0008; color: #aaa; display: none; }
+</style>
+</head>
+<body>
+<div id="stage"><div id="canvas"></div></div>
+<div id="status"></div>
+<button id="change">番号を変える</button>
+
+<div id="login">
+  <div class="box">
+    <h1>運転士支援タブレット</h1>
+    <p>ゲームの中のタブレットの左下に出ている<br>6 けたの接続番号を入れてください</p>
+    <input id="code" inputmode="numeric" pattern="[0-9]*" maxlength="6" autocomplete="off">
+    <button id="go">接続</button>
+    <div id="err"></div>
+  </div>
+</div>
+
+<script>
+// ============================================================
+// 設定：自分の Firebase の Realtime Database の URL（最後に / を付けない）
+// ============================================================
+const DB_URL = "https://amagase-tablet-default-rtdb.asia-southeast1.firebasedatabase.app";
+
+const WATCH_SEC = 10;   // 「見ています」の印を書く間隔（秒）
+const STALE_SEC = 15;   // ゲームからの更新がこの秒数ないと「止まっています」と出す
+
+// ============================================================
+const $ = (id) => document.getElementById(id);
+let code = null;
+let es = null;
+let watchTimer = null;
+let state = { meta: null, nodes: {} };
+let els = {};           // 部品の番号 → 画面の要素
+let fitCache = {};      // 文字の大きさの計算結果
+let renderQueued = false;
+let lastEvent = 0;
+let wakeLock = null;
+
+// ---------------- 接続番号 ----------------
+function showLogin(msg) {
+  $("login").style.display = "flex";
+  $("err").textContent = msg || "";
+  $("status").style.display = "none";
+  $("change").style.display = "none";
+  const saved = localStorage.getItem("tabletCode");
+  if (saved && !$("code").value) $("code").value = saved;
+  setTimeout(() => $("code").focus(), 50);
+}
+
+function start(c) {
+  if (!/^\d{6}$/.test(c)) { showLogin("6 けたの数字を入れてください"); return; }
+  code = c;
+  try { localStorage.setItem("tabletCode", c); } catch (e) {}
+  $("login").style.display = "none";
+  $("status").style.display = "block";
+  $("change").style.display = "block";
+  setStatus("接続しています…", false);
+  connect();
+  keepAwake();
+}
+
+$("go").onclick = () => start($("code").value.trim());
+$("code").addEventListener("keydown", (e) => { if (e.key === "Enter") start($("code").value.trim()); });
+$("change").onclick = () => { disconnect(); showLogin(); };
+
+function setStatus(text, bad) {
+  $("status").textContent = text;
+  $("status").className = bad ? "bad" : "";
+}
+
+// ---------------- Firebase ----------------
+function writeWatch() {
+  if (!code) return;
+  fetch(`${DB_URL}/watch/${code}.json`, { method: "PUT", body: JSON.stringify(Date.now()) }).catch(() => {});
+}
+
+function connect() {
+  disconnect();
+  state = { meta: null, nodes: {} };
+  clearCanvas();
+  writeWatch();
+  watchTimer = setInterval(writeWatch, WATCH_SEC * 1000);
+
+  es = new EventSource(`${DB_URL}/tablets/${code}.json`);
+  es.addEventListener("put", (e) => apply("put", JSON.parse(e.data)));
+  es.addEventListener("patch", (e) => apply("patch", JSON.parse(e.data)));
+  es.addEventListener("keep-alive", () => {});
+  es.addEventListener("cancel", () => setStatus("読み込めません（Firebase のルールを確かめてください）", true));
+  es.onerror = () => setStatus("通信が切れました。つなぎ直しています…", true);
+}
+
+function disconnect() {
+  if (es) { es.close(); es = null; }
+  if (watchTimer) { clearInterval(watchTimer); watchTimer = null; }
+}
+
+// path（"/nodes/n12/t" など）の場所に値を入れる
+function setAt(root, path, value) {
+  const parts = path.split("/").filter(Boolean);
+  if (parts.length === 0) return value;
+  let obj = root;
+  for (let i = 0; i < parts.length - 1; i++) {
+    if (typeof obj[parts[i]] !== "object" || obj[parts[i]] === null) obj[parts[i]] = {};
+    obj = obj[parts[i]];
+  }
+  const last = parts[parts.length - 1];
+  if (value === null) delete obj[last]; else obj[last] = value;
+  return root;
+}
+
+function apply(kind, msg) {
+  lastEvent = Date.now();
+  let root = { meta: state.meta, nodes: state.nodes };
+  if (kind === "put") {
+    if (msg.path === "/" ) {
+      root = msg.data || { meta: null, nodes: {} };
+      els = {}; fitCache = {}; clearCanvas();
+    } else {
+      root = setAt(root, msg.path, msg.data);
+    }
+  } else {
+    for (const [k, v] of Object.entries(msg.data || {})) {
+      root = setAt(root, msg.path.replace(/\/$/, "") + "/" + k, v);
+    }
+  }
+  state.meta = root.meta || null;
+  state.nodes = root.nodes || {};
+  queueRender();
+}
+
+// ---------------- 画面を描く ----------------
+function clearCanvas() { $("canvas").innerHTML = ""; els = {}; }
+
+function queueRender() {
+  if (renderQueued) return;
+  renderQueued = true;
+  requestAnimationFrame(() => { renderQueued = false; render(); });
+}
+
+const rgba = (hex, t) => {
+  const n = parseInt(hex || "000000", 16);
+  return `rgba(${(n >> 16) & 255},${(n >> 8) & 255},${n & 255},${1 - (t || 0)})`;
+};
+const ud = (u, size) => (u ? u[0] * size + u[1] : 0); // [scale, offset]
+
+function render() {
+  const meta = state.meta;
+  if (!meta) {
+    setStatus("ゲームのタブレットが見つかりません（番号を確かめるか、少し待ってください）", true);
+    return;
+  }
+  const W = meta.w || 800, H = meta.h || 600;
+  const canvas = $("canvas");
+  canvas.style.width = W + "px";
+  canvas.style.height = H + "px";
+  fitStage(W, H);
+
+  // 親ごとに子をまとめる
+  const kids = {};
+  for (const [key, n] of Object.entries(state.nodes)) {
+    if (!n) continue;
+    const pk = n.p ? "n" + n.p : "root";
+    (kids[pk] = kids[pk] || []).push(key);
+  }
+  for (const list of Object.values(kids)) list.sort((a, b) => (state.nodes[a].o || 0) - (state.nodes[b].o || 0));
+
+  // 使わなくなった要素を消す
+  for (const key of Object.keys(els)) {
+    if (!state.nodes[key]) { els[key].remove(); delete els[key]; }
+  }
+
+  const layoutChildren = (parentKey, parentEl, pw, ph, listLayout, padding) => {
+    const list = kids[parentKey] || [];
+    let padL = 0, padR = 0, padT = 0, padB = 0;
+    if (padding) {
+      padL = ud(padding[0], pw); padR = ud(padding[1], pw); padT = ud(padding[2], ph); padB = ud(padding[3], ph);
+    }
+    const iw = pw - padL - padR, ih = ph - padT - padB;
+
+    // 並べ方（UIListLayout）
+    let flow = null;
+    if (listLayout) {
+      const vis = list.filter((k) => state.nodes[k].v !== false);
+      const sorted = vis.slice().sort((a, b) => listLayout.so === "lo"
+        ? ((state.nodes[a].lo || 0) - (state.nodes[b].lo || 0)) || ((state.nodes[a].o || 0) - (state.nodes[b].o || 0))
+        : (state.nodes[a].o || 0) - (state.nodes[b].o || 0));
+      const horiz = listLayout.d === "h";
+      const pad = ud(listLayout.pad, horiz ? iw : ih);
+      const sizes = sorted.map((k) => {
+        const s = state.nodes[k].size;
+        return [ud([s[0], s[1]], iw), ud([s[2], s[3]], ih)];
+      });
+      const total = sizes.reduce((a, s) => a + (horiz ? s[0] : s[1]), 0) + pad * Math.max(0, sorted.length - 1);
+      let cur = 0;
+      const mainAlign = horiz ? listLayout.ha : listLayout.va;
+      const room = (horiz ? iw : ih) - total;
+      if (mainAlign === "c") cur = room / 2; else if (mainAlign === "r" || mainAlign === "b") cur = room;
+      flow = {};
+      sorted.forEach((k, i) => {
+        const [w, h] = sizes[i];
+        let x, y;
+        if (horiz) {
+          x = cur; cur += w + pad;
+          y = listLayout.va === "c" ? (ih - h) / 2 : listLayout.va === "b" ? ih - h : 0;
+        } else {
+          y = cur; cur += h + pad;
+          x = listLayout.ha === "c" ? (iw - w) / 2 : listLayout.ha === "r" ? iw - w : 0;
+        }
+        flow[k] = [x, y];
+      });
+    }
+
+    list.forEach((key, idx) => {
+      const n = state.nodes[key];
+      if (!n || !n.size || !n.pos) return; // 届きかけの部品は、全部届くまで描かない
+      let el = els[key];
+      if (!el) {
+        el = document.createElement("div");
+        el.className = "g";
+        els[key] = el;
+      }
+      if (el.parentNode !== parentEl) parentEl.appendChild(el);
+
+      const w = ud([n.size[0], n.size[1]], iw), h = ud([n.size[2], n.size[3]], ih);
+      let x, y;
+      if (flow && flow[key]) { [x, y] = flow[key]; }
+      else {
+        x = ud([n.pos[0], n.pos[1]], iw) - (n.an ? n.an[0] : 0) * w;
+        y = ud([n.pos[2], n.pos[3]], ih) - (n.an ? n.an[1] : 0) * h;
+      }
+      const st = el.style;
+      st.display = n.v === false ? "none" : "block";
+      st.left = (x + padL) + "px"; st.top = (y + padT) + "px";
+      st.width = Math.max(0, w) + "px"; st.height = Math.max(0, h) + "px";
+      st.zIndex = (n.z || 1) * 1000 + idx;
+      st.transform = n.rot ? `rotate(${n.rot}deg)` : "";
+      st.background = (n.bgt ?? 0) >= 1 ? "transparent" : rgba(n.bg, n.bgt);
+      st.overflow = n.clip ? "hidden" : "visible";
+      st.borderRadius = n.cr ? (n.cr[0] * Math.min(w, h) + n.cr[1]) + "px" : "0";
+      const hasText = n.t !== undefined;
+      if (n.st && !hasText) st.boxShadow = `inset 0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}`;
+      else st.boxShadow = "";
+
+      if (n.v !== false) {
+        if (hasText) drawText(el, key, n, w, h);
+        else if (el._tx) { el._tx.remove(); el._tx = null; }
+        layoutChildren(key, el, w, h, n.ll, n.pd);
+      }
+    });
+  };
+  layoutChildren("root", canvas, W, H, null, null);
+
+  const age = (Date.now() - (meta.updated || 0)) / 1000;
+  if (age > STALE_SEC) setStatus(`${meta.train || ""}：ゲームからの更新が止まっています`, true);
+  else setStatus(`${meta.train || ""}　接続中`, false);
+}
+
+function drawText(el, key, n, w, h) {
+  let tx = el._tx;
+  if (!tx) {
+    tx = document.createElement("div");
+    tx.className = "tx";
+    tx.appendChild(document.createElement("span"));
+    el.appendChild(tx);
+    el._tx = tx;
+  }
+  const span = tx.firstChild;
+  const text = n.t || "";
+  const wrap = !!n.wr || text.includes("\n");
+  tx.style.justifyContent = n.ax === "l" ? "flex-start" : n.ax === "r" ? "flex-end" : "center";
+  tx.style.alignItems = n.ay === "t" ? "flex-start" : n.ay === "b" ? "flex-end" : "center";
+  span.style.textAlign = n.ax === "l" ? "left" : n.ax === "r" ? "right" : "center";
+  span.style.whiteSpace = wrap ? "pre-wrap" : "pre";
+  span.style.wordBreak = wrap ? "break-all" : "normal";
+  span.style.color = rgba(n.tc, n.tt);
+  span.style.fontWeight = n.b ? "700" : "400";
+  if (n.st) {
+    span.style.webkitTextStroke = `${n.st[1]}px ${rgba(n.st[0], n.st[2])}`;
+    span.style.paintOrder = "stroke fill";
+  } else {
+    span.style.webkitTextStroke = "";
+  }
+  if (span.textContent !== text) span.textContent = text;
+
+  if (n.sc) {
+    const max = Math.min(n.tmax || 100, 100);
+    const cacheKey = [text, Math.round(w), Math.round(h), n.b, wrap, max].join("|");
+    if (fitCache[key] && fitCache[key].k === cacheKey) {
+      span.style.fontSize = fitCache[key].s + "px";
+    } else {
+      // 欄に収まる一番大きい文字の大きさを探す
+      let lo = 1, hi = max;
+      while (lo < hi) {
+        const mid = Math.ceil((lo + hi) / 2);
+        span.style.fontSize = mid + "px";
+        if (span.scrollWidth <= w + 0.5 && span.scrollHeight <= h + 0.5 && span.offsetWidth <= w + 0.5) lo = mid; else hi = mid - 1;
+      }
+      span.style.fontSize = lo + "px";
+      fitCache[key] = { k: cacheKey, s: lo };
+    }
+  } else {
+    span.style.fontSize = (n.ts || 14) + "px";
+  }
+}
+
+// 画面いっぱいに合わせて拡大・縮小
+function fitStage(W, H) {
+  const vw = window.innerWidth, vh = window.innerHeight;
+  const s = Math.min(vw / W, vh / H);
+  const c = $("canvas");
+  c.style.transform = `scale(${s})`;
+  c.style.left = ((vw - W * s) / 2) + "px";
+  c.style.top = ((vh - H * s) / 2) + "px";
+}
+window.addEventListener("resize", () => { if (state.meta) fitStage(state.meta.w, state.meta.h); });
+
+// 止まっていないかの確認（更新が来なくても、表示を直す）
+setInterval(() => { if (state.meta) queueRender(); }, 3000);
+
+// 画面を消さない（対応している端末だけ）
+async function keepAwake() {
+  try { if ("wakeLock" in navigator) wakeLock = await navigator.wakeLock.request("screen"); } catch (e) {}
+}
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState === "visible" && code) { keepAwake(); writeWatch(); }
+});
+
+// URL の ?code=123456 でもすぐに接続できる
+const qp = new URLSearchParams(location.search).get("code");
+if (DB_URL.includes("あなたの")) {
+  showLogin("この HTML の DB_URL に、Firebase の URL を入れてください");
+} else if (qp) {
+  start(qp);
+} else {
+  showLogin();
+}
+</script>
+</body>
+</html>
