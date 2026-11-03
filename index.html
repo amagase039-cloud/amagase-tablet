@@ -314,7 +314,8 @@ function render() {
     st.zIndex = idx + 1;
     st.transform = n.r ? `rotate(${n.r}deg)` : "";
     st.background = (n.bgt ?? 0) >= 1 ? "transparent" : rgba(n.bg, n.bgt);
-    st.borderRadius = (n.cr || 0) + "px";
+    // 角の丸み（角ごとの丸みがあれば、それを使う：左上・右上・右下・左下）
+    st.borderRadius = n.cr4 ? n.cr4.map((v) => v + "px").join(" ") : (n.cr || 0) + "px";
     // ふち（UIStroke）と枠線（BorderSizePixel）
     const shadows = [];
     if (n.st && n.st[3] !== "t") shadows.push(`0 0 0 ${n.st[1]}px ${rgba(n.st[0], n.st[2])}`);
